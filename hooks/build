@@ -1,0 +1,2 @@
+#!/bin/sh
+docker build --build-arg K8S_VERSION=$DOCKER_TAG -t $IMAGE_NAME .

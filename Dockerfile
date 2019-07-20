@@ -5,6 +5,6 @@ RUN pip install flask Flask-Ext Flask-Cache && \
     /usr/local/lib/python2.7/site-packages/flask_cache/jinja2ext.py
 COPY fake_k8s /fake_k8s
 WORKDIR /fake_k8s
-RUN wget https://raw.githubusercontent.com/kubernetes/kubernetes/${K8S_VERSION:-master}/api/openapi-spec/swagger.json
+RUN wget https://raw.githubusercontent.com/kubernetes/kubernetes/${K8S_VERSION}/api/openapi-spec/swagger.json
 EXPOSE 6443
 ENTRYPOINT ["python", "server.py"]
