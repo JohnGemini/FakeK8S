@@ -1,7 +1,9 @@
 # coding=UTF-8
 import re
 import json
+import os
 import fake_objects
+from fake_resources import FakeResources
 from functools import wraps
 from flask import current_app as app
 from flask_cache import Cache
@@ -105,14 +107,13 @@ labelSelectors = [EqualityBasedSelector, SetBasedSelector, EmptyBasedSelector]
 class ObjectOperator(object):
     def __init__(self, target_name, target_namespace,
                  targets, key, content={}):
-        if content.get('kind'):
-            kind = content['kind']
-        else:
-            for obj in CACHE.get(key) or []:
-                kind = obj['kind']
-                break
-            else:
-                kind = 'None'
+        kind = 'None'
+        fake_resources = FakeResources()
+        resource_list = fake_resources.get(os.path.join(targets['base'],
+                                           targets['version']), targets)
+        for resource in resource_list['response']['resources']:
+            if resource['name'] == key:
+                kind = resource['kind']
         obj_class = getattr(fake_objects, kind,
                             fake_objects.FakeObject)
         name = target_name or content.get('metadata', {}).get('name')
@@ -247,11 +248,8 @@ class FakeRequest(object):
             if api_targets['kind']:
                 target_name = api_targets['name']
                 target_namespace = api_targets['global_name']
-            elif api_targets['global_name']:
-                target_name = api_targets['global_name']
-                target_namespace = None
             else:
-                target_name = None
+                target_name = api_targets['global_name']
                 target_namespace = None
             return func(self, target_name, target_namespace,
                         endpoint, api_targets, **kwargs)
