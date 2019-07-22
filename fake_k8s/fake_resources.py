@@ -109,7 +109,7 @@ class FakeResources(object):
         result = self._traverse_from_keys(copy.deepcopy(keys),
                                           self.resource_list)
         last_key = keys.pop()
-        if last_key == 'apps':
+        if last_key == 'apis':
             groups = []
             for group, group_versions in result.iteritems():
                 groups.append(self._get_api_group(group,

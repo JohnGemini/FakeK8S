@@ -66,7 +66,7 @@ def openapi():
     with open(swagger_path) as f:
         swagger = json.load(f)
     response = app.response_class(
-        response=json.dumps(swagger),
+        response=json.dumps(swagger, indent=2),
         status=200,
         mimetype='application/json'
     )
