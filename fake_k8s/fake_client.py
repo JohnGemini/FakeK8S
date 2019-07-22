@@ -10,7 +10,8 @@ from flask_cache import Cache
 
 
 CACHE = Cache(app, config={'CACHE_TYPE': 'filesystem',
-                           'CACHE_DIR': '/tmp/cache'})
+                           'CACHE_DIR': '/tmp/cache',
+                           'CACHE_DEFAULT_TIMEOUT': 0})
 
 
 def failure_content(status_code, reason, message):
