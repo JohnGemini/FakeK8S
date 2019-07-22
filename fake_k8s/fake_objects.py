@@ -7,11 +7,17 @@ import string
 from datetime import datetime
 from flask import current_app as app
 from flask_cache import Cache
-from jinja2 import Template
+from utils import JinjaEnvironment
 
 
 CACHE = Cache(app, config={'CACHE_TYPE': 'filesystem',
                            'CACHE_DIR': '/tmp/cache'})
+
+
+def gen_child_name(name, size=5):
+    chars = string.ascii_lowercase + string.digits
+    return '%s-%s' % (name,
+                      ''.join(random.choice(chars) for i in xrange(size)))
 
 
 class FakeObject(object):
@@ -26,7 +32,8 @@ class FakeObject(object):
         self.content = content
 
     def render_template(self, **extra_prop):
-        tmpl = Template(self.template)
+        env = JinjaEnvironment()
+        tmpl = env.from_string(self.template)
         return tmpl.render(extra_prop).strip()
 
     def create(self, **extra_prop):
@@ -127,7 +134,7 @@ class Node(FakeObject):
               {% endif %}
               "kubernetes.io/hostname": "{{ obj.metadata.name }}"
           },
-          "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "spec": {
           "externalID": "{{ obj.metadata.name }}",
@@ -203,8 +210,8 @@ class Namespace(FakeObject):
         "kind": "Namespace",
         "metadata": {
           "name": "{{ obj.metadata.name }}",
-          "labels": {{ obj.metadata.labels if obj.metadata.labels else "{}" }},
-          "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "status": {
           "phase": "Active"
@@ -216,17 +223,18 @@ class Namespace(FakeObject):
 class Pod(FakeObject):
     namespaced = True
     template = '''
+      {% set parent = obj.metadata.ownerReferences[0].kind if obj.metadata.ownerReferences else "None" %}
       {
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Pod",
         "metadata": {
             "name": "{{ obj.metadata.name }}",
-            "namespace": "{{ obj.metadata.namespace if obj.metadata.namespace else "default" }}",
+            "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
             {% if "ownerReferences" in obj.metadata %}
               "ownerReferences": {{ obj.metadata.ownerReferences }},
             {% endif %}
-            "labels": {{ obj.metadata.labels if obj.metadata.labels else "{}" }},
-            "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+            "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+            "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "spec": {
         {% for key, value in obj.spec.items() %}
@@ -243,12 +251,12 @@ class Pod(FakeObject):
                     "name": "port.name",
                   {% endif %}
                     "containerPort": {{ port.containerPort }},
-                    "protocol": "{{ port.protocol if port.protocol else "TCP" }}"
+                    "protocol": "{{ port.protocol|default_if_none("TCP") }}"
                   },
                 {% endfor %}
                 ],
-                "resources": {{ container.resources if container.resources else "{}" }},
-                "volumeMounts": {{ container.volumeMounts if container.volumeMounts else "[]" }}
+                "resources": {{ container.resources|default_if_none("{}") }},
+                "volumeMounts": {{ container.volumeMounts|default_if_none("[]") }}
               },
             {% endfor %}
             ],
@@ -265,7 +273,7 @@ class Pod(FakeObject):
             {% for type in ["Initialized", "Ready", "PodScheduled"] %}
               {
                 "lastProbeTime": None,
-                "lastTransitionTime": "{{ current_time }}",
+                "lastTransitionTime": "{{ current_time|datetime }}",
                 "status": "True",
                 "type": "{{ type }}"
               },
@@ -274,23 +282,34 @@ class Pod(FakeObject):
             "containerStatuses": [
             {% for container in obj.spec.containers %}
               {
-                  "containerID": "docker://{% for n in range(12) %}{{ [0,1,2,3,4,5,6,7,8,9]|random }}{% endfor %}",
+                  "containerID": "docker://{{ 12|random_string }}",
                   "image": "{{ container.image }}",
                   "name": "{{ container.name }}",
-                  "ready": True,
                   "restartCount": 0,
-                  "state": {
-                      "running": {
-                        "startedAt": "{{ current_time }}"
-                      }
-                  }
+              {% if parent == "Job" %}
+                "ready": False,
+                "state": {
+                    "terminated": {
+                      "startedAt": "{{ current_time|datetime }}",
+                      "finishedAt": "{{ current_time|datetime }}",
+                      "reason": "Completed"
+                    }
+                }
+              {% else %}
+                "ready": True,
+                "state": {
+                    "running": {
+                      "startedAt": "{{ current_time|datetime }}"
+                    }
+                }
+              {% endif %}
               },
             {% endfor %}
             ],
             "hostIP": "slave",
-            "phase": "Running",
+            "phase": "{{ "Succeeded" if parent == "Job" else "Running" }}",
             "podIP": "127.0.0.1",
-            "startTime": "{{ current_time }}"
+            "startTime": "{{ current_time|datetime }}"
         }
       }
     '''
@@ -314,17 +333,17 @@ class ReplicationController(FakeObject):
         "kind": "ReplicationController",
         "metadata": {
           "name": "{{ obj.metadata.name }}",
-          "namespace": "{{ obj.metadata.namespace if obj.metadata.namespace else "default" }}",
-          "labels": {{ obj.metadata.labels if obj.metadata.labels else "{}" }},
-          "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "spec": {
           "replicas": {{ replicas }},
           "selector": {{ obj.spec.template.metadata.labels }},
           "template": {
             "metadata": {
-              "labels": {{ obj.spec.template.metadata.labels if obj.spec.template.metadata.labels else "{}" }},
-              "annotations": {{ obj.spec.template.metadata.annotations if obj.spec.template.metadata.annotations else "{}" }}
+              "labels": {{ obj.spec.template.metadata.labels|default_if_none("{}") }},
+              "annotations": {{ obj.spec.template.metadata.annotations|default_if_none("{}") }}
             },
             "spec": {{ obj.spec.template.spec }}
           }
@@ -339,20 +358,15 @@ class ReplicationController(FakeObject):
       }
     '''
 
-    def __gen_child_name(self):
-        chars = string.ascii_lowercase + string.digits
-        return '%s-%s' % (self.name,
-                          ''.join(random.choice(chars) for i in xrange(5)))
-
     def __create_child_pods(self, template, replicas):
         for replica in xrange(replicas):
-            pod_template = copy.deepcopy(template)
+            pod_template = copy.deepcopy(template['spec']['template'])
             pod_template.update({'apiVersion': 'v1', 'kind': 'Pod'})
             pod_template['metadata'].update({
-                'name': self.__gen_child_name(),
+                'name': gen_child_name(self.name),
                 'namespace': self.namespace,
                 'ownerReferences': [{
-                    'apiVersion': 'v1',
+                    'apiVersion': template['apiVersion'],
                     'kind': self.kind,
                     'name': self.name
                 }]
@@ -363,10 +377,9 @@ class ReplicationController(FakeObject):
             pod_obj.create()
 
     def create(self):
-        content = super(ReplicationController, self).create()
-        self.__create_child_pods(content['spec']['template'],
-                                 content['spec']['replicas'])
-        return content
+        obj = super(ReplicationController, self).create()
+        self.__create_child_pods(obj, obj['spec']['replicas'])
+        return obj
 
     def update(self):
         obj = super(ReplicationController, self).update()
@@ -376,8 +389,7 @@ class ReplicationController(FakeObject):
             childs_num = len(child_pods)
             if childs_num != replicas:
                 if childs_num < replicas:
-                    self.__create_child_pods(obj['spec']['template'],
-                                             replicas - childs_num)
+                    self.__create_child_pods(obj, replicas - childs_num)
                 elif childs_num > replicas:
                     remove_num = childs_num - replicas
                     for index, pod in enumerate(reversed(child_pods)):
@@ -398,9 +410,9 @@ class Service(FakeObject):
         "kind": "Service",
         "metadata": {
           "name": "{{ obj.metadata.name }}",
-          "namespace": "{{ obj.metadata.namespace if obj.metadata.namespace else "default" }}",
-          "labels": {{ obj.metadata.labels if obj.metadata.labels else "{}" }},
-          "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "spec": {
           {% if "externalIPs" in obj.spec %}
@@ -416,17 +428,17 @@ class Service(FakeObject):
                   {% if "nodePort" in port %}
                     "nodePort": {{ port.nodePort }},
                   {% else %}
-                    "nodePort": 3{% for n in range(4) %}{{ [0,1,2,3,4,5,6,7,8,9]|random }}{% endfor %},
+                    "nodePort": 3{{ 4|random_number }},
                   {% endif %}
                 {% endif %}
                 "port": {{ port.port }},
-                "protocol": "{{ port.protocol if port.protocol else "TCP" }}",
-                "targetPort": {{ port.targetPort if port.targetPort else port.port }}
+                "protocol": "{{ port.protocol|default_if_none("TCP") }}",
+                "targetPort": {{ port.targetPort|default_if_none(port.port) }}
               },
             {% endfor %}
           ],
           "selector": {{ obj.spec.selector }},
-          "type": "{{ obj.spec.type if obj.spec.type else "ClusterIP" }}",
+          "type": "{{ obj.spec.type|default_if_none("ClusterIP") }}",
           "clusterIP": "127.0.0.1",
           "externalTrafficPolicy": "Cluster",
           "sessionAffinity": "None"
@@ -454,9 +466,9 @@ class NetworkPolicy(FakeObject):
         "kind": "NetworkPolicy",
         "metadata": {
           "name": "{{ obj.metadata.name }}",
-          "namespace": "{{ obj.metadata.namespace if obj.metadata.namespace else "default" }}",
-          "labels": {{ obj.metadata.labels if obj.metadata.labels else "{}" }},
-          "annotations": {{ obj.metadata.annotations if obj.metadata.annotations else "{}" }}
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
         "spec": {
         {% if "ingress" in obj.spec %}
@@ -477,3 +489,96 @@ class NetworkPolicy(FakeObject):
         }
       }
     '''
+
+
+class Job(FakeObject):
+    namespaced = True
+    template = '''
+      {% set parallelism = obj.spec.parallelism|default_if_none(1) %}
+      {% set completions = obj.spec.completions|default_if_none(parallelism) %}
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "Job",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {
+          "backoffLimit": {{ obj.spec.backoffLimit if "backoffLimit" in obj.spec else 6 }},
+          "parallelism": {{ parallelism }},
+          "completions": {{ completions }},
+          "selector": {
+            "matchLabels": {
+              "job-name": "{{ obj.metadata.name }}"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+              {% if "labels" in obj.spec.template.metadata %}
+                {% for key, value in obj.spec.template.metadata.labels.items() %}
+                  {% if value is string %}
+                    "{{ key }}": "{{ value }}",
+                  {% else %}
+                    "{{ key }}": {{ value }},
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+                "job-name": "{{ obj.metadata.name }}"
+              },
+              "annotations": {{ obj.spec.template.metadata.annotations|default_if_none("{}") }}
+            },
+            "spec": {{ obj.spec.template.spec }}
+          }
+        },
+        "status": {
+          "conditions": [
+            {
+              "lastProbeTime": "{{ current_time|datetime }}",
+              "lastTransitionTime": "{{ current_time|datetime }}",
+              "status": "True",
+              "type": "Complete"
+            }
+          ],
+          "completionTime": "{{ current_time|datetime }}",
+          "startTime": "{{ current_time|datetime }}",
+          "succeeded": {{ completions }}
+        }
+      }
+    '''
+
+    def __create_child_pods(self, template, completions):
+        for completion in xrange(completions):
+            pod_template = copy.deepcopy(template['spec']['template'])
+            pod_template.update({'apiVersion': 'v1', 'kind': 'Pod'})
+            pod_template['metadata'].update({
+                'name': gen_child_name(self.name),
+                'namespace': self.namespace,
+                'ownerReferences': [{
+                    'apiVersion': template['apiVersion'],
+                    'kind': self.kind,
+                    'name': self.name
+                }]
+            })
+            pod_obj = Pod('Pod', pod_template['metadata']['name'],
+                          self.namespace, 'pods',
+                          pod_template)
+            pod_obj.create()
+
+    def create(self):
+        obj = super(Job, self).create(current_time=datetime.utcnow())
+        self.__create_child_pods(obj, obj['spec']['completions'])
+        return obj
+
+    def delete(self):
+        obj = super(Job, self).delete()
+        if obj:
+            child_pods = self.get_objects_by_references('pods')
+            for pod in child_pods:
+                pod_obj = Pod(
+                    'Pod', pod['metadata']['name'],
+                     self.namespace, 'pods', pod)
+                pod_obj.delete()
+        return obj
