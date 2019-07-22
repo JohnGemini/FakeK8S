@@ -10,9 +10,7 @@ from flask_cache import Cache
 from utils import JinjaEnvironment
 
 
-CACHE = Cache(app, config={'CACHE_TYPE': 'filesystem',
-                           'CACHE_DIR': '/tmp/cache',
-                           'CACHE_DEFAULT_TIMEOUT': 0})
+CACHE = Cache(app, config=app.config['CACHE_CONFIG'])
 
 
 def gen_child_name(name, size=5):

@@ -1,10 +1,13 @@
 # coding=UTF-8
 from flask import Flask, json, request
+import settings
+import argparse
 import os
 import re
 
 
 app = Flask(__name__)
+app.config.from_object(settings)
 cxt = app.app_context()
 cxt.push()
 
@@ -75,6 +78,12 @@ def openapi():
 
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=6443)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cache-dir', dest='cache_dir',
+                        help='Directory to store cache')
+    args = parser.parse_args()
+    if args.cache_dir:
+        app.config['CACHE_CONFIG']['CACHE_DIR'] = args.cache_dir
+    app.run('0.0.0.0', 6443)
 
 cxt.pop()
