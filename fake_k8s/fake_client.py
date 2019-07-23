@@ -3,6 +3,7 @@ import re
 import json
 import os
 import fake_objects
+import utils
 from fake_resources import FakeResources
 from functools import wraps
 from flask import current_app as app
@@ -22,85 +23,6 @@ def failure_content(status_code, reason, message):
         'status': 'Failure'
     }
     return content
-
-
-class NamespaceSelector(object):
-    def __init__(self, namespace):
-        self.namespace = namespace
-
-    def __call__(self, obj):
-        return obj['metadata']['namespace'] == self.namespace
-
-
-class Selector(object):
-    pattern = ''
-
-    def __init__(self, selector):
-        self.selector = selector
-
-    @property
-    def requirements(self):
-        if not hasattr(self, '_requirements'):
-            match = re.match(self.pattern, self.selector)
-            if not match:
-                return
-            self._requirements = match.groupdict()
-        return self._requirements
-
-    @property
-    def is_available(self):
-        return bool(self.requirements)
-
-
-class EqualityBasedSelector(Selector):
-    pattern = '^(?P<key>[^!\s]+)\s*(?P<operator>=|!=)\s*(?P<value>\S+)$'
-
-    def __call__(self, obj):
-        label_value = obj['metadata'].get('labels', {}).get(
-            self.requirements['key'])
-        return (self.requirements['operator'] == '!=') == \
-            (label_value != self.requirements['value'])
-
-
-class fieldSelector(EqualityBasedSelector):
-
-    def __match(self, obj, fields):
-        field = next(fields, None)
-        if not field:
-            return (self.requirements['operator'] == '!=') == \
-                (obj != self.requirements['value'])
-        else:
-            if field in obj:
-                return self.__match(obj[field], fields)
-            else:
-                return self.requirements['operator'] == '!='
-
-    def __call__(self, obj):
-        fields = iter(re.findall('\w+', self.requirements['key']))
-        return self.__match(obj, fields)
-
-
-class SetBasedSelector(Selector):
-    pattern = '^(?P<key>\S+)\s+(?P<operator>in|notin)\s+(?P<values>\(.*\))$'
-
-    def __call__(self, obj):
-        label_value = obj['metadata'].get('labels', {}).get(
-            self.requirements['key'])
-        values = re.findall('\\b(\S+)\\b', self.requirements['values'])
-        return (self.requirements['operator'] == 'notin') == \
-            (label_value not in values)
-
-
-class EmptyBasedSelector(Selector):
-    pattern = '^(?P<empty>!?)(?P<key>\S+)$'
-
-    def __call__(self, obj):
-        labels = obj['metadata'].get('labels', {})
-        return bool(self.requirements['empty']) == \
-            (self.requirements['key'] not in labels)
-
-
-labelSelectors = [EqualityBasedSelector, SetBasedSelector, EmptyBasedSelector]
 
 
 class ObjectOperator(object):
@@ -133,7 +55,7 @@ class ObjectOperator(object):
         labels_list = re.findall(label_pattern, label_selectors)
         selectors = []
         for label in labels_list:
-            for selector in labelSelectors:
+            for selector in utils.labelSelectors:
                 selector_inst = selector(label)
                 if selector_inst.is_available:
                     selectors.append(selector_inst)
@@ -147,7 +69,7 @@ class ObjectOperator(object):
         fields_list = re.findall(field_pattern, field_selectors)
         selectors = []
         for field in fields_list:
-            selector_inst = fieldSelector(field)
+            selector_inst = utils.fieldSelector(field)
             if selector_inst.is_available:
                 selectors.append(selector_inst)
             else:
@@ -156,7 +78,7 @@ class ObjectOperator(object):
 
     def ns_filter(self, namespace):
         if namespace and self.obj.namespaced:
-            return [NamespaceSelector(namespace)]
+            return [utils.NamespaceSelector(namespace)]
         else:
             return []
 
@@ -196,28 +118,17 @@ class ObjectOperator(object):
 
     @request_handler
     def create(self, **kwargs):
-        objects = CACHE.get(self.key) or []
-        for obj in objects:
-            if (obj['kind'] == self.obj.kind and
-                    obj['metadata']['name'] == self.obj.name and
-                    obj['metadata'].get('namespace') == self.obj.namespace):
-                return failure_content(
-                    409, 'AlreadyExists',
-                    '%s "%s" already exists' % (self.key, self.obj.name))
+        if self.obj.get():
+            return failure_content(
+                409, 'AlreadyExists',
+                '%s "%s" already exists' % (self.key, self.obj.name))
         return self.obj.create()
 
     @request_handler
     def get(self, **kwargs):
-        objects = CACHE.get(self.key) or []
         if self.obj.name:
-            for obj in objects:
-                if obj['metadata'].get('namespace') == self.obj.namespace \
-                        and obj['metadata']['name'] == self.obj.name:
-                    return obj
-            else:
-                return failure_content(
-                    404, 'NotFound',
-                    '%s "%s" not found' % (self.key, self.obj.name))
+            return self.obj.get()
+        objects = CACHE.get(self.key) or []
         filters = self.ns_filter(self.obj.namespace)
         filters.extend(self.label_filter(kwargs.get('labelSelector', '')))
         filters.extend(self.field_filter(kwargs.get('fieldSelector', '')))

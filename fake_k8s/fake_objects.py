@@ -7,7 +7,7 @@ import string
 from datetime import datetime
 from flask import current_app as app
 from flask_cache import Cache
-from utils import JinjaEnvironment
+import utils
 
 
 CACHE = Cache(app, config=app.config['CACHE_CONFIG'])
@@ -23,7 +23,7 @@ class FakeObject(object):
     namespaced = False
     template = ''
 
-    def __init__(self, kind, name, namespace, key, content):
+    def __init__(self, kind, name, namespace, key, content={}):
         self.kind = kind
         self.name = name
         self.namespace = namespace
@@ -31,9 +31,18 @@ class FakeObject(object):
         self.content = content
 
     def render_template(self, **extra_prop):
-        env = JinjaEnvironment()
+        env = utils.JinjaEnvironment()
         tmpl = env.from_string(self.template)
         return tmpl.render(extra_prop).strip()
+
+    def get(self):
+        objects = CACHE.get(self.key) or []
+        for obj in objects:
+            if (obj['kind'] == self.kind and
+                    obj['metadata']['name'] == self.name and
+                    obj['metadata'].get('namespace') == self.namespace):
+                return obj
+        return {}
 
     def create(self, **extra_prop):
         objects = CACHE.get(self.key) or []
@@ -199,7 +208,7 @@ class Node(FakeObject):
         spec = self.content.get('spec', {})
         if spec.get('unschedulable') is not True:
             spec.pop('unschedulable', None)
-        super(Node, self).update()
+        return super(Node, self).update()
 
 
 class Namespace(FakeObject):
@@ -370,14 +379,16 @@ class ReplicationController(FakeObject):
                     'name': self.name
                 }]
             })
-            pod_obj = Pod('Pod', pod_template['metadata']['name'],
+            pod_obj = Pod(pod_template['kind'],
+                          pod_template['metadata']['name'],
                           self.namespace, 'pods',
                           pod_template)
             pod_obj.create()
 
     def create(self):
         obj = super(ReplicationController, self).create()
-        self.__create_child_pods(obj, obj['spec']['replicas'])
+        if obj:
+            self.__create_child_pods(obj, obj['spec']['replicas'])
         return obj
 
     def update(self):
@@ -395,8 +406,7 @@ class ReplicationController(FakeObject):
                         if index < remove_num:
                             pod_obj = Pod(
                                 'Pod', pod['metadata']['name'],
-                                 self.namespace,
-                                'pods', pod)
+                                 self.namespace, 'pods')
                             pod_obj.delete()
         return obj
 
@@ -561,14 +571,16 @@ class Job(FakeObject):
                     'name': self.name
                 }]
             })
-            pod_obj = Pod('Pod', pod_template['metadata']['name'],
+            pod_obj = Pod(pod_template['kind'],
+                          pod_template['metadata']['name'],
                           self.namespace, 'pods',
                           pod_template)
             pod_obj.create()
 
     def create(self):
         obj = super(Job, self).create(current_time=datetime.utcnow())
-        self.__create_child_pods(obj, obj['spec']['completions'])
+        if obj:
+            self.__create_child_pods(obj, obj['spec']['completions'])
         return obj
 
     def delete(self):
@@ -578,6 +590,214 @@ class Job(FakeObject):
             for pod in child_pods:
                 pod_obj = Pod(
                     'Pod', pod['metadata']['name'],
-                     self.namespace, 'pods', pod)
+                     self.namespace, 'pods')
                 pod_obj.delete()
         return obj
+
+
+class Ingress(FakeObject):
+    namespaced = True
+    template = '''
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "Ingress",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {{ obj.spec }},
+        "status": {
+          "loadBalancer": {
+            "ingress": [
+              {
+                "ip": "127.0.0.1"
+              }
+            ]
+          }
+        }
+      }
+    '''
+
+
+class Secret(FakeObject):
+    namespaced = True
+    template = '''
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "Secret",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "type": "{{ obj.type }}",
+        "data": {{ obj.data }}
+      }
+    '''
+
+
+class PersistentVolumeClaim(FakeObject):
+    namespaced = True
+    template = '''
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {{ obj.spec }},
+        "status": {
+        {% if bind_pv %}
+          "accessModes": {{ bind_pv.spec.accessModes }},
+          "capacity": {{ bind_pv.spec.capacity }},
+        {% endif %}
+          "phase": "{{ "Bound" if bind_pv else "Pending" }}"
+        }
+      }
+    '''
+
+    def __get_bind_pv(self):
+        bind_pv = None
+        pvs = CACHE.get('persistentvolumes') or []
+        spec = self.content['spec']
+        for pv in pvs:
+            if pv['status']['phase'] != 'Available':
+                continue
+            elif spec.get('volumeName') == pv['metadata']['name']:
+                bind_pv = pv
+                break
+            selectors = utils.as_selectors(
+                spec.get('selector', {}).get('matchLabels', {}))
+            selectors.extend(utils.as_selectors(
+                spec.get('selector', {}).get('matchExpressions', [])))
+            if all(selector(pv) for selector in selectors):
+                bind_pv = pv
+                break
+        return bind_pv
+
+    def create(self):
+        bind_pv = self.__get_bind_pv()
+        obj = super(PersistentVolumeClaim, self).create(bind_pv=bind_pv)
+        if obj and bind_pv:
+            update_content = {
+                'spec': {
+                    'claimRef': {
+                        'apiVersion': obj['apiVersion'],
+                        'kind': obj['kind'],
+                        'name': obj['metadata']['name'],
+                        'namespace': obj['metadata']['namespace']
+                    }
+                }
+            }
+            pv_obj = PersistentVolume(bind_pv['kind'],
+                                      bind_pv['metadata']['name'],
+                                      None, 'persistentvolumes',
+                                      update_content)
+            pv_obj.update(status='Bound')
+        return obj
+
+    def delete(self):
+        obj = super(PersistentVolumeClaim, self).delete()
+        if obj and obj['status']['phase'] == 'Bound':
+            pvs = CACHE.get('persistentvolumes') or []
+            for pv in pvs:
+                claimRef = pv['spec'].get('claimRef')
+                if claimRef and claimRef['kind'] == self.kind and \
+                        claimRef['name'] == self.name and \
+                        claimRef['namespace'] == self.namespace:
+                    pv_obj = PersistentVolume(pv['kind'],
+                                              pv['metadata']['name'],
+                                              None, 'persistentvolumes')
+                    if pv['status']['phase'] == 'Bound':
+                        pv_obj.update(status='Release')
+                    elif pv['status']['phase'] == 'Terminating':
+                        pv_obj.delete()
+                    break
+        return obj
+
+
+class PersistentVolume(FakeObject):
+    template = '''
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "PersistentVolume",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {
+        {% if not obj.spec.persistentVolumeReclaimPolicy %}
+          "persistentVolumeReclaimPolicy": "Retain",
+        {% endif %}
+        {% for key, value in obj.spec.items() %}
+          {% if value is string %}
+            "{{ key }}": "{{ value }}",
+          {% else %}
+            "{{ key }}": {{ value }},
+          {% endif %}
+        {% endfor %}
+        },
+        "status": {
+          "phase": "{{ status|default_if_none("Available") }}"
+        }
+      }
+    '''
+
+    def __get_reference_claims(self):
+        pvcs = CACHE.get('persistentvolumeclaims') or []
+        claims = []
+        for pvc in pvcs:
+            if pvc['spec'].get('volumeName') == self.name:
+                claims.append(pvc)
+                continue
+            selectors = utils.as_selectors(
+                pvc['spec'].get('selector', {}).get('matchLabels', {}))
+            selectors.extend(utils.as_selectors(
+                pvc['spec'].get('selector', {}).get('matchExpressions', [])))
+            if all(selector(self.content) for selector in selectors):
+                claims.append(pvc)
+        return claims
+
+    def create(self):
+        status = 'Available'
+        for claim in self.__get_reference_claims():
+            if claim['status']['phase'] == 'Pending':
+                update_content = {
+                    'spec': {'volumeName': self.name},
+                }
+                pvc_obj = PersistentVolumeClaim(
+                    claim['kind'], claim['metadata']['name'],
+                    claim['metadata']['namespace'], 'persistentvolumeclaims',
+                    update_content)
+                pvc_obj.update(bind_pv=self.content)
+                self.content['spec']['claimRef'] = {
+                    'apiVersion': claim['apiVersion'],
+                    'kind': claim['kind'],
+                    'name': claim['metadata']['name'],
+                    'namespace': claim['metadata']['namespace']
+                }
+                status = 'Bound'
+                break
+        return super(PersistentVolume, self).create(status=status)
+
+    def delete(self):
+        obj = self.get()
+        if obj and obj['spec'].get('claimRef'):
+            pvc_obj = PersistentVolumeClaim(
+                obj['spec']['claimRef']['kind'],
+                obj['spec']['claimRef']['name'],
+                obj['spec']['claimRef']['namespace'],
+                'persistentvolumeclaims')
+            if pvc_obj.get():
+                if obj['status']['phase'] != 'Terminating':
+                    return self.update(status='Terminating')
+                else:
+                    return obj
+        return super(PersistentVolume, self).delete()
