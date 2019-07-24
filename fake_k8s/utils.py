@@ -70,7 +70,7 @@ class SetBasedSelector(Selector):
     def __call__(self, obj):
         label_value = obj['metadata'].get('labels', {}).get(
             self.requirements['key'])
-        values = re.findall('\\b(\S+)\\b', self.requirements['values'])
+        values = re.findall('\\b([^,]+)\\b', self.requirements['values'])
         return (self.requirements['operator'] == 'notin') == \
             (label_value not in values)
 
