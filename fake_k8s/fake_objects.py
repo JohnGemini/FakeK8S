@@ -32,6 +32,7 @@ class FakeObject(object):
     def render_template(self, **extra_prop):
         env = utils.JinjaEnvironment()
         tmpl = env.from_string(self.template)
+        extra_prop['current_time'] = datetime.utcnow()
         return tmpl.render(extra_prop).strip()
 
     def get(self):
@@ -216,6 +217,7 @@ class Namespace(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Namespace",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
           "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
@@ -235,6 +237,7 @@ class Pod(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Pod",
         "metadata": {
+            "creationTimestamp": "{{ current_time|datetime }}",
             "name": "{{ obj.metadata.name }}",
             "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
             {% if "ownerReferences" in obj.metadata %}
@@ -321,12 +324,6 @@ class Pod(FakeObject):
       }
     '''
 
-    def create(self):
-        return super(Pod, self).create(current_time=datetime.utcnow())
-
-    def update(self):
-        return super(Pod, self).update(current_time=datetime.utcnow())
-
     def log(self, **kwargs):
         return {'content': 'This is the log message from the fake client'}
 
@@ -339,6 +336,7 @@ class ReplicationController(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "ReplicationController",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -417,6 +415,7 @@ class Service(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Service",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -473,6 +472,7 @@ class NetworkPolicy(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "NetworkPolicy",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -508,6 +508,7 @@ class Job(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Job",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           {% if "ownerReferences" in obj.metadata %}
@@ -580,7 +581,7 @@ class Job(FakeObject):
             pod_obj.create()
 
     def create(self):
-        obj = super(Job, self).create(current_time=datetime.utcnow())
+        obj = super(Job, self).create()
         if obj:
             self.__create_child_pods(obj, obj['spec']['completions'])
         return obj
@@ -604,6 +605,7 @@ class CronJob(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "CronJob",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -645,7 +647,7 @@ class CronJob(FakeObject):
         job_obj.create()
 
     def create(self):
-        obj = super(CronJob, self).create(current_time=datetime.utcnow())
+        obj = super(CronJob, self).create()
         if obj:
             self.__create_child_job(obj)
         return obj
@@ -669,6 +671,7 @@ class Ingress(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Ingress",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -695,6 +698,7 @@ class Secret(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Secret",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -713,6 +717,7 @@ class PersistentVolumeClaim(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "PersistentVolumeClaim",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
@@ -795,6 +800,7 @@ class PersistentVolume(FakeObject):
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "PersistentVolume",
         "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
           "name": "{{ obj.metadata.name }}",
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
           "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
