@@ -36,8 +36,10 @@ def api(path=''):
     else:
         resources = FakeResources()
         output = resources.get(path, api_targets)
+    content = output['response'].get('content') or \
+        json.dumps(output['response'])
     response = app.response_class(
-        response=json.dumps(output['response']),
+        response=content,
         status=output['code'],
         mimetype='application/json'
     )
