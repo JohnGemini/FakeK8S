@@ -147,7 +147,7 @@ class Node(FakeObject):
         "spec": {
           "externalID": "{{ obj.metadata.name }}",
           "podCIDR": "127.0.0.0/24",
-          {% if obj.spec.unschedulable %}
+          {% if "unschedulable" in obj.spec and obj.spec.unschedulable %}
             "unschedulable": True
           {% endif %}
         },
@@ -232,7 +232,16 @@ class Namespace(FakeObject):
 class Pod(FakeObject):
     namespaced = True
     template = '''
-      {% set parent = obj.metadata.ownerReferences[0].kind if obj.metadata.ownerReferences else "None" %}
+      {% if not status %}
+        {% if "phase" in obj.status %}
+          {% set status = obj.status.phase %}
+        {% elif "ownerReferences" in obj.metadata and obj.metadata.ownerReferences[0].kind == "Job" %}
+          {% set status = "Succeeded" %}
+        {% else %}
+          {% set status = "Running" %}
+        {% endif %}
+      {% endif %}
+      {% set nodeName = node.metadata.name if node else obj.spec.nodeName %}
       {
         "apiVersion": "{{ obj.apiVersion }}",
         "kind": "Pod",
@@ -276,9 +285,12 @@ class Pod(FakeObject):
             "{{ key }}": {{ value }},
           {% endif %}
         {% endfor %}
-            "nodeName": "slave"
+          {% if nodeName %}
+            "nodeName": "{{ nodeName }}"
+          {% endif %}
         },
         "status": {
+          {% if status != "Pending" %}
             "conditions": [
             {% for type in ["Initialized", "Ready", "PodScheduled"] %}
               {
@@ -296,7 +308,7 @@ class Pod(FakeObject):
                   "image": "{{ container.image }}",
                   "name": "{{ container.name }}",
                   "restartCount": 0,
-              {% if parent == "Job" %}
+              {% if status == "Succeeded" %}
                 "ready": False,
                 "state": {
                     "terminated": {
@@ -316,13 +328,45 @@ class Pod(FakeObject):
               },
             {% endfor %}
             ],
-            "hostIP": "slave",
-            "phase": "{{ "Succeeded" if parent == "Job" else "Running" }}",
+            "hostIP": "127.0.0.1",
             "podIP": "127.0.0.1",
-            "startTime": "{{ current_time|datetime }}"
+            "startTime": "{{ current_time|datetime }}",
+          {% endif %}
+            "phase": "{{ status }}"
         }
       }
     '''
+
+    def __pod_scheduler(self):
+        nodes = CACHE.get('nodes') or []
+        spec = self.content['spec']
+        scheduled_node = None
+        if 'nodeName' in spec:
+            for node in nodes:
+                if node['metadata']['name'] == spec['nodeName']:
+                    scheduled_node = node
+                    break
+        else:
+            selectors = utils.as_selectors(spec.get('nodeSelector', {}))
+            nodeSelectors = spec.get('affinity', {}).get(
+                'nodeAffinity', {}
+            ).get(
+                'requiredDuringSchedulingIgnoredDuringExecution', {}
+            ).get('nodeSelectorTerms', [])
+            for nodeSelector in nodeSelectors:
+                selectors.extend(utils.as_selectors(nodeSelector.get(
+                    'matchExpressions', [])))
+            match_nodes = filter(
+                lambda node: all(selector(node) for selector in selectors),
+                nodes)
+            if match_nodes:
+                scheduled_node = random.choice(match_nodes)
+        return scheduled_node
+
+    def create(self):
+        node = self.__pod_scheduler()
+        status = 'Pending' if not node else None
+        return super(Pod, self).create(node=node, status=status)
 
     def log(self, **kwargs):
         return {'content': 'This is the log message from the fake client'}
