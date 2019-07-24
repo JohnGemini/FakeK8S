@@ -13,8 +13,7 @@ import utils
 CACHE = Cache(app, config=app.config['CACHE_CONFIG'])
 
 
-def gen_child_name(name, size=5):
-    chars = string.ascii_lowercase + string.digits
+def gen_child_name(name, size=5, chars=string.ascii_lowercase + string.digits):
     return '%s-%s' % (name,
                       ''.join(random.choice(chars) for i in xrange(size)))
 
@@ -381,8 +380,8 @@ class ReplicationController(FakeObject):
             })
             pod_obj = Pod(pod_template['kind'],
                           pod_template['metadata']['name'],
-                          self.namespace, 'pods',
-                          pod_template)
+                          pod_template['metadata']['namespace'],
+                          'pods', pod_template)
             pod_obj.create()
 
     def create(self):
@@ -405,8 +404,8 @@ class ReplicationController(FakeObject):
                     for index, pod in enumerate(reversed(child_pods)):
                         if index < remove_num:
                             pod_obj = Pod(
-                                'Pod', pod['metadata']['name'],
-                                 self.namespace, 'pods')
+                                pod['kind'], pod['metadata']['name'],
+                                pod['metadata']['namespace'], 'pods')
                             pod_obj.delete()
         return obj
 
@@ -511,6 +510,9 @@ class Job(FakeObject):
         "metadata": {
           "name": "{{ obj.metadata.name }}",
           "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          {% if "ownerReferences" in obj.metadata %}
+            "ownerReferences": {{ obj.metadata.ownerReferences }},
+          {% endif %}
           "labels": {{ obj.metadata.labels|default_if_none("{}") }},
           "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
         },
@@ -573,8 +575,8 @@ class Job(FakeObject):
             })
             pod_obj = Pod(pod_template['kind'],
                           pod_template['metadata']['name'],
-                          self.namespace, 'pods',
-                          pod_template)
+                          pod_template['metadata']['namespace'],
+                          'pods', pod_template)
             pod_obj.create()
 
     def create(self):
@@ -589,9 +591,74 @@ class Job(FakeObject):
             child_pods = self.get_objects_by_references('pods')
             for pod in child_pods:
                 pod_obj = Pod(
-                    'Pod', pod['metadata']['name'],
-                     self.namespace, 'pods')
+                    pod['kind'], pod['metadata']['name'],
+                    pod['metadata']['namespace'], 'pods')
                 pod_obj.delete()
+        return obj
+
+
+class CronJob(FakeObject):
+    namespaced = True
+    template = '''
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "CronJob",
+        "metadata": {
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {
+          "concurrencyPolicy": "{{ obj.spec.concurrencyPolicy|default_if_none("Allow") }}",
+          "schedule": "{{ obj.spec.schedule }}",
+          "jobTemplate": {
+            "metadata": {{ obj.spec.jobTemplate.metadata|default_if_none("{}") }},
+            "spec": {{ obj.spec.jobTemplate.spec }}
+          },
+          "failedJobsHistoryLimit": {{ obj.spec.failedJobsHistoryLimit|default_if_none(1) }},
+          "successfulJobsHistoryLimit": {{ obj.spec.successfulJobsHistoryLimit|default_if_none(3) }},
+          "suspend": {{ obj.spec.suspend|default_if_none("False") }}
+        },
+        "status": {
+          "lastScheduleTime": "{{ current_time|datetime }}"
+        }
+      }
+    '''
+
+    def __create_child_job(self, template):
+        job_template = copy.deepcopy(template['spec']['jobTemplate'])
+        job_template.update({'apiVersion': 'batch/v1', 'kind': 'Job'})
+        job_template['metadata'].update({
+            'name': gen_child_name(self.name, size=10, chars=string.digits),
+            'namespace': self.namespace,
+            'ownerReferences': [{
+                'apiVersion': template['apiVersion'],
+                'kind': self.kind,
+                'name': self.name
+            }]
+        })
+        job_obj = Job(job_template['kind'],
+                      job_template['metadata']['name'],
+                      job_template['metadata']['namespace'],
+                      'jobs', job_template)
+        job_obj.create()
+
+    def create(self):
+        obj = super(CronJob, self).create(current_time=datetime.utcnow())
+        if obj:
+            self.__create_child_job(obj)
+        return obj
+
+    def delete(self):
+        obj = super(CronJob, self).delete()
+        if obj:
+            child_jobs = self.get_objects_by_references('jobs')
+            for job in child_jobs:
+                job_obj = Job(
+                    job['kind'], job['metadata']['name'],
+                    job['metadata']['namespace'], 'jobs')
+                job_obj.delete()
         return obj
 
 
