@@ -32,7 +32,7 @@ def api(path=''):
         session = FakeRequest()
         method = getattr(session, request.method.lower())
         output = method(api_targets=api_targets, data=request.data or {},
-                        **request.args)
+                        **request.args.to_dict())
     else:
         resources = FakeResources()
         output = resources.get(path, api_targets)
