@@ -7,5 +7,6 @@ COPY fake_k8s /fake_k8s
 WORKDIR /fake_k8s
 RUN wget https://raw.githubusercontent.com/kubernetes/kubernetes/${K8S_VERSION}/api/openapi-spec/swagger.json
 EXPOSE 6443
+VOLUME /tmp/cache
 ENTRYPOINT ["python"]
 CMD ["server.py"]
