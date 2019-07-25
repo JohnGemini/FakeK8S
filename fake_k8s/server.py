@@ -4,6 +4,10 @@ import settings
 import argparse
 import os
 import re
+try:
+    from urlparse import urlparse, parse_qs
+except Exception:
+    from urllib.parse import urlparse, parse_qs
 
 
 app = Flask(__name__)
@@ -31,8 +35,12 @@ def api(path=''):
             api_targets['global_kind']:
         session = FakeRequest()
         method = getattr(session, request.method.lower())
-        output = method(api_targets=api_targets, data=request.data or {},
-                        **request.args.to_dict())
+        data = request.data or '{}'
+        query = parse_qs(request.query_string)
+        for key, value in query.iteritems():
+            if len(value) == 1:
+                query[key] = value[0]
+        output = method(api_targets=api_targets, data=data, **query)
     else:
         resources = FakeResources()
         output = resources.get(path, api_targets)
@@ -44,6 +52,7 @@ def api(path=''):
         mimetype='application/json'
     )
     return response
+
 
 @app.route('/version')
 def version():
