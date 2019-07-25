@@ -267,7 +267,7 @@ class Pod(FakeObject):
                 {% for port in container.ports %}
                   {
                   {% if "name" in port %}
-                    "name": "port.name",
+                    "name": "{{ port.name }}",
                   {% endif %}
                     "containerPort": {{ port.containerPort }},
                     "protocol": "{{ port.protocol|default_if_none("TCP") }}"
@@ -370,6 +370,21 @@ class Pod(FakeObject):
 
     def log(self, **kwargs):
         return {'content': 'This is the log message from the fake client'}
+
+    def __getattr__(self, attr):
+        if attr == 'exec':
+            return self.exec_command
+        else:
+            return super(Pod, self).__getattribute__(attr)
+
+    def exec_command(self, **kwargs):
+        command = ' '.join(kwargs['command'])
+        container = kwargs['container'][0] \
+            if isinstance(kwargs['container'], list) else kwargs['container']
+        return {'content': (
+            "This is the response from the fake client. "
+            "Execute '%s' in the container '%s'" % (command, container))
+        }
 
 
 class ReplicationController(FakeObject):
