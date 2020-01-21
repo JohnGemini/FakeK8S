@@ -361,6 +361,8 @@ class Pod(FakeObject):
                 nodes)
             if match_nodes:
                 scheduled_node = random.choice(match_nodes)
+            elif not selectors and nodes:
+                scheduled_node = random.choice(nodes)
         return scheduled_node
 
     def create(self):
@@ -933,3 +935,227 @@ class PersistentVolume(FakeObject):
                 else:
                     return obj
         return super(PersistentVolume, self).delete()
+
+
+class ReplicaSet(FakeObject):
+    namespaced = True
+    template = '''
+      {% set replicas = obj.spec.replicas if "replicas" in obj.spec else 1 %}
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "ReplicaSet",
+        "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          {% if "ownerReferences" in obj.metadata %}
+            "ownerReferences": {{ obj.metadata.ownerReferences }},
+          {% endif %}
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {{ obj.metadata.annotations|default_if_none("{}") }}
+        },
+        "spec": {
+          "replicas": {{ replicas }},
+          "selector": {
+            "matchLabels": {{ obj.spec.template.metadata.labels }}
+          },
+          "template": {
+            "metadata": {
+              "labels": {{ obj.spec.template.metadata.labels|default_if_none("{}") }},
+              "annotations": {{ obj.spec.template.metadata.annotations|default_if_none("{}") }}
+            },
+            "spec": {{ obj.spec.template.spec }}
+          }
+        },
+        "status": {
+          "availableReplicas": {{ replicas }},
+          "fullyLabeledReplicas": {{ replicas }},
+          "observedGeneration": {{ replicas }},
+          "readyReplicas": {{ replicas }},
+          "replicas": {{ replicas }}
+        }
+      }
+    '''
+
+    def __create_child_pods(self, template, replicas):
+        for replica in xrange(replicas):
+            pod_template = copy.deepcopy(template['spec']['template'])
+            pod_template.update({'apiVersion': 'v1', 'kind': 'Pod'})
+            pod_template['metadata'].update({
+                'name': gen_child_name(self.name),
+                'namespace': self.namespace,
+                'ownerReferences': [{
+                    'apiVersion': template['apiVersion'],
+                    'kind': self.kind,
+                    'name': self.name
+                }]
+            })
+            pod_obj = Pod(pod_template['kind'],
+                          pod_template['metadata']['name'],
+                          pod_template['metadata']['namespace'],
+                          'pods', pod_template)
+            pod_obj.create()
+
+    def create(self):
+        obj = super(ReplicaSet, self).create()
+        if obj:
+            self.__create_child_pods(obj, obj['spec']['replicas'])
+        return obj
+
+    def update(self):
+        obj = super(ReplicaSet, self).update()
+        if obj:
+            replicas = obj['spec']['replicas']
+            child_pods = self.get_objects_by_references('pods')
+            childs_num = len(child_pods)
+            if childs_num != replicas:
+                if childs_num < replicas:
+                    self.__create_child_pods(obj, replicas - childs_num)
+                elif childs_num > replicas:
+                    remove_num = childs_num - replicas
+                    for index, pod in enumerate(reversed(child_pods)):
+                        if index < remove_num:
+                            pod_obj = Pod(
+                                pod['kind'], pod['metadata']['name'],
+                                pod['metadata']['namespace'], 'pods')
+                            pod_obj.delete()
+        return obj
+
+
+class Deployment(FakeObject):
+    namespaced = True
+    template = '''
+      {% set replicas = obj.spec.replicas if "replicas" in obj.spec else 1 %}
+      {
+        "apiVersion": "{{ obj.apiVersion }}",
+        "kind": "Deployment",
+        "metadata": {
+          "creationTimestamp": "{{ current_time|datetime }}",
+          "name": "{{ obj.metadata.name }}",
+          "namespace": "{{ obj.metadata.namespace|default_if_none("default") }}",
+          "labels": {{ obj.metadata.labels|default_if_none("{}") }},
+          "annotations": {
+            {% for key, value in obj.metadata.annotations.items() %}
+              {% if key != "deployment.kubernetes.io/revision" %}
+                {% if value is string %}
+                  "{{ key }}": "{{ value }}",
+                {% else %}
+                  "{{ key }}": {{ value }},
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% set revision = (obj.metadata.annotations["deployment.kubernetes.io/revision"]|default_if_none('0')|int) %}
+            "deployment.kubernetes.io/revision": "{{ revision + 1 }}"
+          }
+        },
+        "spec": {
+          {% if "minReadySeconds" in obj.spec %}
+            "minReadySeconds": {{ obj.spec.minReadySeconds }},
+          {% endif %}
+          {% if "paused" in obj.spec and obj.spec.paused %}
+            "paused": True,
+          {% endif %}
+          "progressDeadlineSeconds": {{ obj.spec.progressDeadlineSeconds|default_if_none(600) }},
+          "revisionHistoryLimit": {{ obj.spec.revisionHistoryLimit|default_if_none(10) }},
+          "replicas": {{ replicas }},
+          "selector": {
+            "matchLabels": {{ obj.spec.template.metadata.labels }}
+          },
+          "strategy": {
+            {% set strategy = obj.spec.strategy or {} %}
+            {% set type = strategy.type or "RollingUpdate" %}
+            {% if type == "RollingUpdate" %}
+              {% set maxSurge = strategy.rollingUpdate.maxSurge if strategy.rollingUpdate and "maxSurge" in strategy.rollingUpdate else 1 %}
+              {% set maxUnavailable = strategy.rollingUpdate.maxUnavailable if strategy.rollingUpdate and "maxUnavailable" in strategy.rollingUpdate else 1 %}
+              "rollingUpdate": {
+                {% if maxSurge is string %}
+                  "maxSurge": "{{ maxSurge }}",
+                {% else %}
+                  "maxSurge": {{ maxSurge }},
+                {% endif %}
+                {% if maxUnavailable is string %}
+                  "maxUnavailable": "{{ maxUnavailable }}"
+                {% else %}
+                  "maxUnavailable": {{ maxUnavailable }}
+                {% endif %}
+              },
+            {% endif %}
+            "type": "{{ type }}"
+          },
+          "template": {
+            "metadata": {
+              "labels": {{ obj.spec.template.metadata.labels|default_if_none("{}") }},
+              "annotations": {{ obj.spec.template.metadata.annotations|default_if_none("{}") }}
+            },
+            "spec": {{ obj.spec.template.spec }}
+          }
+        },
+        "status": {
+          "availableReplicas": {{ replicas }},
+          "updatedReplicas": {{ replicas }},
+          "observedGeneration": {{ replicas }},
+          "readyReplicas": {{ replicas }},
+          "replicas": {{ replicas }}
+        }
+      }
+    '''
+
+    def __create_child_rs(self, template, replicas, revision='1'):
+        rs_template = copy.deepcopy(template)
+        rs_template.update({'apiVersion': 'apps/v1', 'kind': 'ReplicaSet'})
+        rs_template['metadata'].update({
+            'name': gen_child_name(self.name, size=9),
+            'namespace': self.namespace,
+            'labels': template['spec']['selector']['matchLabels'],
+            'annotations': {
+               'deployment.kubernetes.io/revision': revision
+            },
+            'ownerReferences': [{
+                'apiVersion': template['apiVersion'],
+                'kind': self.kind,
+                'name': self.name
+            }]
+        })
+        rs_obj = ReplicaSet(rs_template['kind'],
+                            rs_template['metadata']['name'],
+                            rs_template['metadata']['namespace'],
+                            'replicasets', rs_template)
+        rs_obj.create()
+
+    def create(self):
+        if 'annotations' not in self.content['metadata']:
+            self.content['metadata']['annotations'] = {}
+        obj = super(Deployment, self).create()
+        if obj:
+            self.__create_child_rs(obj, obj['spec']['replicas'])
+        return obj
+
+    def update(self):
+        obj = super(Deployment, self).update()
+        if obj:
+            limit = obj['spec']['revisionHistoryLimit']
+            revision = obj['metadata']['annotations'][
+                'deployment.kubernetes.io/revision']
+            child_rs = self.get_objects_by_references('replicasets')
+            for index, rs in enumerate(child_rs):
+                rs_obj = ReplicaSet(rs['kind'],
+                                    rs['metadata']['name'],
+                                    rs['metadata']['namespace'],
+                                    'replicasets',
+                                    {'spec': {'replicas': 0}})
+                rs_obj.update()
+                if index >= (limit - 1):
+                    rs_obj.delete()
+            self.__create_child_rs(obj, obj['spec']['replicas'], revision)
+        return obj
+
+    def delete(self):
+        obj = self.get()
+        if obj:
+            for rs in self.get_objects_by_references('replicasets'):
+                rs_obj = ReplicaSet(rs['kind'],
+                                    rs['metadata']['name'],
+                                    rs['metadata']['namespace'],
+                                    'replicasets')
+                rs_obj.delete()
+        return super(Deployment, self).delete()
